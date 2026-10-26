@@ -1,4 +1,4 @@
-name: Manual ANON pilot: text + vectors to Drive
+name: "Manual ANON pilot: text + vectors to Drive"
 
 on:
   workflow_dispatch:
