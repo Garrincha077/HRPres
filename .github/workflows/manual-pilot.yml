@@ -1,0 +1,83 @@
+name: Manual ANON pilot: text + vectors to Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_new:
+        description: "New decisions (pilot maximum 1000)"
+        type: choice
+        options: ["10", "25", "100", "250"]
+        default: "25"
+      embedding_model:
+        description: "CPU embedding model for the pilot"
+        type: choice
+        options:
+          - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+          - BAAI/bge-m3
+        default: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hrpres-anon-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      HRPRES_RCLONE_CONFIG: ${{ secrets.HRPRES_RCLONE_CONFIG }}
+      HRPRES_REMOTE: ${{ vars.HRPRES_REMOTE }}
+      MAX_NEW: ${{ inputs.max_new }}
+      EMBEDDING_MODEL: ${{ inputs.embedding_model }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install corpus and local CPU embedding dependencies
+        run: python -m pip install ".[embed]"
+      - name: Validate Drive configuration
+        shell: bash
+        run: |
+          test -n "$HRPRES_RCLONE_CONFIG" || { echo "Set HRPRES_RCLONE_CONFIG repo secret"; exit 1; }
+          test -n "$HRPRES_REMOTE" || { echo "Set HRPRES_REMOTE repo variable"; exit 1; }
+          printf '%s' "$HRPRES_RCLONE_CONFIG" > "$RUNNER_TEMP/rclone.conf"
+          sudo apt-get update -qq
+          sudo apt-get install -y rclone
+          rclone --config "$RUNNER_TEMP/rclone.conf" lsd "$HRPRES_REMOTE"
+      - name: Restore previous SQLite checkpoint
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/hrpres-work"
+          if rclone --config "$RUNNER_TEMP/rclone.conf" lsf "$HRPRES_REMOTE/00-manifests" --files-only | grep -Fxq "state.sqlite3"; then
+            rclone --config "$RUNNER_TEMP/rclone.conf" copyto "$HRPRES_REMOTE/00-manifests/state.sqlite3" "$RUNNER_TEMP/hrpres-work/state.sqlite3"
+          fi
+      - name: Collect newest-first sequentially
+        shell: bash
+        run: |
+          python -m hrpres collect --db "$RUNNER_TEMP/hrpres-work/state.sqlite3" --max-new "$MAX_NEW" --interval 0.7 --max-pages 200
+      - name: Export portable text and FTS
+        shell: bash
+        run: |
+          python -m hrpres export --db "$RUNNER_TEMP/hrpres-work/state.sqlite3" --out "$RUNNER_TEMP/hrpres-out"
+      - name: Embed passages on GitHub CPU
+        shell: bash
+        run: |
+          release=$(find "$RUNNER_TEMP/hrpres-out" -mindepth 1 -maxdepth 1 -type d -name 'hrpres-pilot-*' | head -n 1)
+          test -n "$release"
+          name=$(basename "$release")
+          python -m hrpres.embed --release "$release" --out "$RUNNER_TEMP/hrpres-vectors/$name" --model "$EMBEDDING_MODEL" --device cpu --batch-size 16
+      - name: Publish complete release and restore point
+        shell: bash
+        run: |
+          release=$(find "$RUNNER_TEMP/hrpres-out" -mindepth 1 -maxdepth 1 -type d -name 'hrpres-pilot-*' | head -n 1)
+          test -n "$release"
+          name=$(basename "$release")
+          rclone --config "$RUNNER_TEMP/rclone.conf" copy "$release" "$HRPRES_REMOTE/06-releases/$name" --immutable
+          rclone --config "$RUNNER_TEMP/rclone.conf" copy "$RUNNER_TEMP/hrpres-vectors/$name" "$HRPRES_REMOTE/02-embeddings/$name" --include 'embeddings-f16.npz' --include 'vectors-manifest.json' --immutable
+          rclone --config "$RUNNER_TEMP/rclone.conf" copyto "$RUNNER_TEMP/hrpres-vectors/$name/vectors.faiss" "$HRPRES_REMOTE/03-vector-indexes/$name.faiss"
+          rclone --config "$RUNNER_TEMP/rclone.conf" copyto "$RUNNER_TEMP/hrpres-work/state.sqlite3" "$HRPRES_REMOTE/00-manifests/state.sqlite3"
