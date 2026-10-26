@@ -1,0 +1,16 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+*.sqlite3
+*.db
+*.npz
+*.faiss
+*.jsonl.gz
+*.partial/
+rclone.conf
+secrets/
+data/
+releases/
