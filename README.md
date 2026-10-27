@@ -21,6 +21,42 @@ https://odluke.sudovi.hr/. Neslužbeni, neovisni projekt.
 
 ## Prva provjera
 
+## Provjereni vektorski pilot: točno 25 odluka
+
+Workflow `Vector pilot: fixed 25 decisions on CPU` obrađuje zaključeni javni
+paket u `examples/public-pilot-25`, bez dodatnog dohvata s ANON-a i bez Drivea.
+Iz 25 odluka i 58 izvornih odlomaka izrađeno je **202 vektora od 384 dimenzije**.
+[Stvarno uspješno pokretanje](https://github.com/Garrincha077/HRPres/actions/runs/40427909573).
+
+Koristi se točno određena revizija višejezičnog MiniLM-a u kvantiziranom
+ONNX CPU obliku. Tokenizer dijeli tekst na segmente do 128 tokena uz
+preklapanje od 24 tokena. Provjera potvrđuje pokrivenost cijelog izvornog
+teksta i SHA-256 svih datoteka. Isti model, tokenizer i izračun vektora rade
+na GitHubu i lokalno; nema ovisnosti o Ollami ili generativnom modelu.
+
+Instalacija i naredbe za reproduciranje:
+
+    python -m pip install ".[onnx]" faiss-cpu
+    python -m hrpres.onnx_pilot build --release examples/public-pilot-25 --out vector-pilot
+    python -m hrpres.onnx_pilot verify --bundle vector-pilot
+    python -m hrpres.onnx_pilot interactive --bundle vector-pilot
+
+Za lokalne upite dovoljni su NumPy, ONNX Runtime i Tokenizers; račun se radi
+nad spremljenim vektorima, a FAISS datoteka ostaje u paketu za druge čitače.
+Artifact sadrži i lokalni model pa sama pretraga ne traži mrežni pristup.
+Model se učitava jednom za više upita u interaktivnom načinu.
+
+Na testiranom i3-8100 probni upiti nakon učitavanja trajali su približno
+0,015–0,016 s, uz oko 438 MiB radne memorije procesa. To su mjerenja ovog
+malog funkcionalnog pilota; nisu procjena brzine cijelog korpusa niti potvrda
+pravne relevantnosti. Automatska vektorizacija novih paketa ostaje zaseban rad.
+
+Windows pokretač `PRETRAZI-VEKTORE-25.cmd` očekuje instaliran paket u
+`vectors/pilot-25-minilm-onnx`, zasebno okruženje `.venv-vectors` i modul u
+`app/src/hrpres/onnx_pilot.py`, relativno prema vlastitoj mapi.
+
+## Prva provjera tekstualnog pilota
+
 Instalacija i offline testovi (Python 3.11 ili noviji):
 
     python -m pip install -e ".[test]"
