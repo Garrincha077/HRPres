@@ -23,6 +23,8 @@ def main():
         print("3  Prikaži stanje")
         print("4  Pretraži spremljene odluke")
         print("5  Zatraži pauzu drugog otvorenog HRPres prozora")
+        print("6  KONTINUIRANO: preuzimanje i lokalni vektori")
+        print("7  Pretraži po značenju sve vektorizirane odluke")
         print("0  Izlaz")
         try:
             choice = input("Odabir: ").strip()
@@ -33,6 +35,10 @@ def main():
                 print("Preuzimanje je sekvencijalno. Za pauzu otvori PAUZIRAJ-HRPRES.cmd ili pritisni Ctrl+C.")
             elif choice == "3":
                 command = ["status"]
+                vector_python = root / ".venv-vectors" / "Scripts" / "python.exe"
+                if vector_python.exists():
+                    subprocess.run([str(vector_python), "-X", "utf8", "-m", "hrpres.continuous", "status", "--root", str(root)], check=False)
+                    continue
             elif choice == "4":
                 query = input("Riječi za lokalnu pretragu: ").strip()
                 if not query:
@@ -40,8 +46,17 @@ def main():
                 command = ["search", "--query", query]
             elif choice == "5":
                 command = ["pause"]
+            elif choice in ("6", "7"):
+                vector_python = root / ".venv-vectors" / "Scripts" / "python.exe"
+                if not vector_python.exists():
+                    print("Najprije pripremi lokalni vektorski model i okruženje.")
+                    continue
+                print("Za pauzu oba posla otvori PAUZIRAJ-HRPRES.cmd ili pritisni Ctrl+C.")
+                subprocess.run([str(vector_python), "-X", "utf8", "-m", "hrpres.continuous",
+                                "run" if choice == "6" else "search", "--root", str(root)], check=False)
+                continue
             else:
-                print("Odaberi broj od 0 do 5.")
+                print("Odaberi broj od 0 do 7.")
                 continue
             subprocess.run([sys.executable, "-X", "utf8", "-m", "hrpres", *command, "--db", str(db)], check=False)
         except KeyboardInterrupt:

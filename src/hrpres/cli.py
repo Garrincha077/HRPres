@@ -72,6 +72,8 @@ def main():
     download.add_argument("--date-to", type=date.fromisoformat)
     download.add_argument("--min-free-gib", type=float, default=100)
     download.add_argument("--json", action="store_true")
+    download.add_argument("--continuous", action="store_true", help="Nastavljaj bez količinskog limita i prati nove objave")
+    download.add_argument("--refresh-seconds", type=float, default=1800)
     for action, description in (("status", "Prikaži spremljeni napredak"),
                                 ("pause", "Zatraži pauzu aktivnog preuzimanja"),
                                 ("search", "Pretraži lokalne odluke po riječima")):
@@ -131,14 +133,17 @@ def main():
                     def show_progress(event):
                         if not args.json and event["event"] == "decision_saved" and (
                                 event["new"] <= 3 or event["new"] % 10 == 0):
-                            print(f"Novo: {event['new']}/{args.max_new}; ukupno: {event['total']} odluka.", flush=True)
+                            target = "bez limita" if args.continuous else str(args.max_new)
+                            print(f"Novo: {event['new']}/{target}; ukupno: {event['total']} odluka.", flush=True)
                         elif not args.json and event["event"] == "window_split":
                             print("Raspon ima previše rezultata; dijelim ga na manje raspone.", flush=True)
 
                     with AnonClient(interval=args.interval, cancelled=lambda: pause_path(args.db).exists()) as client:
-                        result = collect_local(corpus, client, max_new=args.max_new, max_pages=args.max_pages,
+                        result = collect_local(corpus, client, max_new=None if args.continuous else args.max_new,
+                                               max_pages=None if args.continuous else args.max_pages,
                                                start=args.date_from, end=args.date_to,
-                                               min_free_gib=args.min_free_gib, progress=show_progress)
+                                               min_free_gib=args.min_free_gib, progress=show_progress,
+                                               follow=args.continuous, refresh_seconds=args.refresh_seconds)
                     result["sleep_prevention_active_during_run"] = awake.active
                     atomic_json(args.db.parent / "last-run.json", result)
                     if not args.json:

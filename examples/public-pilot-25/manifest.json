@@ -1,0 +1,19 @@
+{
+  "schema": "hrpres-corpus/1",
+  "release": "hrpres-pilot-20261027T001747-26ac5a93",
+  "created_utc": "2026-10-27T00:17:47+00:00",
+  "source": "Tražilica odluka sudova Republike Hrvatske",
+  "source_url": "https://odluke.sudovi.hr",
+  "attribution": "Izvor: Tražilica odluka sudova Republike Hrvatske (https://odluke.sudovi.hr)",
+  "decisions": 25,
+  "passages": 58,
+  "files": {
+    "documents.jsonl.gz": {
+      "bytes": 19878,
+      "sha256": "580fa3b6b831e7328b50a9e435d940fe94b3902856240b85f2260b11638d2635"
+    }
+  },
+  "embedding_status": "not_computed",
+  "warning": "Pilot je datumski sortiran, ali nije provjereno potpuno pokrivanje izvora.",
+  "note": "Fixed public-source pilot: 25 decisions, 58 original passages; no private matter files."
+}

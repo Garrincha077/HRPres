@@ -10,7 +10,8 @@ https://odluke.sudovi.hr/. Neslužbeni, neovisni projekt.
 
 ## Što je spremno
 
-- Ograničeni pilot: novije odluke prve, deduplikacija stabilnog UUID-a,
+- Kontinuirani lokalni način: preuzimanje i lokalni ONNX vektori bez količinskog limita.
+- Novije odluke prve, deduplikacija stabilnog UUID-a,
   SQLite checkpoint za nastavak, izdvajanje teksta i metapodataka.
 - Komprimirani JSONL tekstovi, punotekstni SQLite FTS5 i SHA-256 manifest.
 - **Vektori na GitHubu**: ručni Actions proces na besplatnom CPU runneru,
@@ -19,7 +20,54 @@ https://odluke.sudovi.hr/. Neslužbeni, neovisni projekt.
 - FAISS točni indeks i float16 arhiv vektora po verziji, s modelom u manifestu.
 - Povezivanje s Google Driveom putem rclone konfiguracije u GitHub Secrets.
 
-## Lokalno preuzimanje na Windowsu (0.2)
+## Kontinuirani način na Windowsu (0.3)
+
+U izborniku `POKRENI-HRPRES.cmd` odaberi **6 — KONTINUIRANO** ili otvori
+`KONTINUIRANO-HRPRES.cmd`. Jedno pokretanje nastavlja preuzimanje i
+vektorizaciju do pauze, zatvaranja prozora ili pogreške koja zahtijeva pregled.
+Nema zaustavljanja nakon 1.000 odluka ili 200 stranica. Opcije 1 i 2 ostaju
+za ograničene probe. Ako drugi collector već radi, prvo ga pauziraj;
+kontinuirani način čuva njegov spremljeni red čekanja.
+
+Koristi se prethodno preuzet kvantizirani ONNX model. `.venv-vectors` ima
+CPU ovisnosti, a `vectors/pilot-25-minilm-onnx/model` ima provjereni model.
+Kad taj paket postoji, instalacijska skripta priprema i vektorsko okruženje;
+ne preuzima dodatne modele. Preuzimanje i vektori rade lokalno u dva radnika.
+Vektori se dopisuju u `data/vectors.sqlite3`; svaki odlomak i njegova
+potvrda obrade spremaju se u istoj transakciji. Nakon prekida obrađuje se
+samo nedovršeno. Postojeća 202 vektora pilotnih 25 odluka koriste se ponovno.
+
+**Pauza:** `PAUZIRAJ-HRPRES.cmd` ili Ctrl+C zaustavlja oba posla. Sljedeće
+pokretanje nastavlja spremljene stranice i odlomke. Privremena mrežna greška
+aktivira automatski ponovni pokušaj uz čekanje od 30 do 300 sekundi, odnosno
+dulje ako to traži `Retry-After`. Manjak prostora, promjena izgleda izvora,
+neslaganje brojeva ili greška modela zaustavljaju rad uz sačuvane podatke.
+
+Datum završetka proširuje se na današnji datum. Svakih 30 minuta ponovno se
+pregleda jedan dovršeni raspon iz zadnjih 90 dana, što otkriva nove UUID-ove
+objavljene naknadno. Odjednom se ponovno otvara samo jedan raspon kako se
+staro preuzimanje ne bi stalno prekidalo. Nakon pregleda svih raspona program
+čeka sljedeću provjeru. To nije potpuna provjera ispravaka teksta postojećih
+UUID-ova, nedatiranih odluka ili naknadnih objava starijih od 90 dana.
+
+Opcija **7 — Pretraži po značenju** i `PRETRAZI-VEKTORE.cmd` pretražuju sve
+obrađene odluke, uključujući nove. Status pokazuje odvojeno broj preuzetih i
+vektoriziranih odlomaka. Pretraga čita vektore u malim blokovima i ne učitava
+cijeli korpus u RAM; vrijeme raste s veličinom indeksa. Za interaktivnu
+pretragu milijuna odluka kasnije treba komprimirani indeks.
+
+    python -m hrpres.continuous run --root D:\HRPres
+    python -m hrpres.continuous status --root D:\HRPres
+    python -m hrpres.continuous search --root D:\HRPres
+
+`continuous drain` jednokratno vektorizira odlomke koji su bili spremljeni
+na početku poziva; može raditi dok postojeći collector preuzima dalje.
+`download --continuous` uključuje samo kontinuirani collector. Zajednička
+opcija 6 preporučena je za preuzimanje i vektore zajedno. Za rad nakon
+gašenja računala treba ponovno otvoriti pokretač; automatsko pokretanje uz
+Windows nije uključeno.
+
+## Lokalno ograničeno preuzimanje
 
 Za glavni korpus preporučen je **jedan lokalni collector**. Ne pokretati
 istodobno lokalni collector i GitHub collector. Lokalni postupak nema
@@ -50,8 +98,8 @@ integritet baze; ta provjera na velikoj bazi može potrajati.
 Preuzimanje pamti **raspone datuma, stranice i red odluka** u SQLiteu.
 Zadani početni raspon je od `1900-01-01` do datuma prvog pokretanja;
 `--date-from YYYY-MM-DD` i `--date-to YYYY-MM-DD` mijenjaju početni raspon.
-Kod nastavka ostaje spremljeni završni datum. Ova verzija još ne proširuje
-automatski raspon na novije datume i ne provjerava sve naknadne ispravke.
+Kod ograničenog nastavka ostaje spremljeni završni datum. Kontinuirani način
+proširuje ga i prati nove objave kako je opisano iznad.
 Drugi raspon zahtijeva zasebnu bazu, a aplikacija odbija tihu promjenu plana.
 
 Portal ograničava pojedinu pretragu na 10.000 rezultata. Collector mjesečne
@@ -75,13 +123,48 @@ završetak trenutačnog HTTP zahtjeva; možeš koristiti i Ctrl+C.
 potvrđene odluke ostaju dostupne. Aktivnu SQLite bazu ne kopirati ručno;
 koristiti eksplicitni izvoz kad collector ne radi. **Izvoz i vektorizacija
 u starom workflowu i dalje su pune pilotne snimke.** Inkrementalni paketi,
-vektorska usporedba i adapteri za aplikacije sljedeća su faza.
+vektorska usporedba i adapteri za aplikacije ostaju zaseban rad. Lokalni
+kontinuirani način koristi inkrementalnu vektorsku bazu.
 
 Poklapanje brojeva u pojedinom rasponu nije dokaz da su obuhvaćene sve
 naknadne objave, nedatirane odluke ili ispravci cijelog izvora. Izvještaj
 zato zadržava `coverage_independently_verified: false`.
 
-## Razvoj i stari GitHub pilot
+## Provjereni vektorski pilot: točno 25 odluka
+
+Workflow `Vector pilot: fixed 25 decisions on CPU` obrađuje zaključeni javni
+paket u `examples/public-pilot-25`, bez dodatnog dohvata s ANON-a i bez Drivea.
+Iz 25 odluka i 58 izvornih odlomaka izrađeno je **202 vektora od 384 dimenzije**.
+[Stvarno uspješno pokretanje](https://github.com/Garrincha077/HRPres/actions/runs/40427909573).
+
+Koristi se točno određena revizija višejezičnog MiniLM-a u kvantiziranom
+ONNX CPU obliku. Tokenizer dijeli tekst na segmente do 128 tokena uz
+preklapanje od 24 tokena. Provjera potvrđuje pokrivenost cijelog izvornog
+teksta i SHA-256 svih datoteka. Isti model, tokenizer i izračun vektora rade
+na GitHubu i lokalno; nema ovisnosti o Ollami ili generativnom modelu.
+
+Instalacija i naredbe za reproduciranje:
+
+    python -m pip install ".[onnx]" faiss-cpu
+    python -m hrpres.onnx_pilot build --release examples/public-pilot-25 --out vector-pilot
+    python -m hrpres.onnx_pilot verify --bundle vector-pilot
+    python -m hrpres.onnx_pilot interactive --bundle vector-pilot
+
+Za lokalne upite dovoljni su NumPy, ONNX Runtime i Tokenizers; račun se radi
+nad spremljenim vektorima, a FAISS datoteka ostaje u paketu za druge čitače.
+Artifact sadrži i lokalni model pa sama pretraga ne traži mrežni pristup.
+Model se učitava jednom za više upita u interaktivnom načinu.
+
+Na testiranom i3-8100 probni upiti nakon učitavanja trajali su približno
+0,015–0,016 s, uz oko 438 MiB radne memorije procesa. To su mjerenja ovog
+malog funkcionalnog pilota; nisu procjena brzine cijelog korpusa niti potvrda
+pravne relevantnosti. Kontinuirani lokalni rad koristi isti provjereni model.
+
+Windows pokretač `PRETRAZI-VEKTORE-25.cmd` očekuje instaliran paket u
+`vectors/pilot-25-minilm-onnx`, zasebno okruženje `.venv-vectors` i modul u
+`app/src/hrpres/onnx_pilot.py`, relativno prema vlastitoj mapi.
+
+## Prva provjera tekstualnog pilota
 
 Instalacija i offline testovi (Python 3.11 ili noviji):
 
@@ -94,7 +177,8 @@ GitHub workflowom nakon postavljanja Drive pristupa.
     python -m hrpres collect --db data/state.sqlite3 --max-new 25
     python -m hrpres export --db data/state.sqlite3 --out releases
 
-Program je zasad ograničen na **1.000 novih presuda u jednom pokretanju**.
+Stara naredba `collect` i ograničeni `download` dopuštaju najviše
+**1.000 novih presuda u jednom pokretanju**. Kontinuirani način nema taj limit.
 Nema automatskog rasporeda ni masovnog paralelnog crawlera.
 
 ## GitHub Actions: bez vlastitog računala

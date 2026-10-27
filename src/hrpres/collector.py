@@ -65,6 +65,12 @@ def prepare(corpus: Corpus, start: date | None, end: date | None) -> dict:
           UNIQUE(window_id,scan,fingerprint)
         );
     """)
+    for table, column, ddl in (
+        ("crawl_windows", "generation", "ALTER TABLE crawl_windows ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"),
+        ("crawl_queue", "seen_generation", "ALTER TABLE crawl_queue ADD COLUMN seen_generation INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if column not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
+            db.execute(ddl)
     existing = db.execute("SELECT * FROM crawl_plan WHERE singleton=1").fetchone()
     if existing:
         if (start and start.isoformat() != existing["start_date"]) or (
@@ -90,6 +96,38 @@ def prepare(corpus: Corpus, start: date | None, end: date | None) -> dict:
     return dict(db.execute("SELECT * FROM crawl_plan WHERE singleton=1").fetchone())
 
 
+def refresh_follow(corpus: Corpus, *, today: date | None = None, recent_days: int = 90):
+    """Extend to today and revisit one recent leaf, without starving the backfill.
+
+    Saved UUIDs stay saved. Generation marks count only the listings seen in the
+    current revisit, including when a previously listed decision disappeared.
+    This does not refetch all unchanged UUIDs for content-only corrections.
+    """
+    db = corpus.db
+    today = today or date.today()
+    plan = db.execute("SELECT * FROM crawl_plan WHERE singleton=1").fetchone()
+    old_end = date.fromisoformat(plan["end_date"])
+    with db:
+        cursor = old_end + timedelta(days=1)
+        while cursor <= today:
+            next_month = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+            last = min(today, next_month - timedelta(days=1))
+            db.execute("INSERT OR IGNORE INTO crawl_windows(start_date,end_date) VALUES (?,?)",
+                       (cursor.isoformat(), last.isoformat()))
+            cursor = last + timedelta(days=1)
+        if today > old_end:
+            db.execute("UPDATE crawl_plan SET end_date=? WHERE singleton=1", (today.isoformat(),))
+        cutoff = (today - timedelta(days=recent_days)).isoformat()
+        completed = [r[0] for r in db.execute(
+            "SELECT id FROM crawl_windows WHERE state='complete' AND end_date>=? "
+            "ORDER BY finished_utc ASC,end_date DESC LIMIT 1", (cutoff,))]
+        for wid in completed:
+            db.execute("DELETE FROM crawl_pages WHERE window_id=?", (wid,))
+            db.execute("UPDATE crawl_windows SET state='pending',next_page=1,scan=0,generation=generation+1,"
+                       "reported_count=NULL,finished_utc=NULL,last_error=NULL WHERE id=?", (wid,))
+    return dict(db.execute("SELECT * FROM crawl_plan WHERE singleton=1").fetchone())
+
+
 def _block(db: sqlite3.Connection, window_id: int, message: str):
     with db:
         db.execute("UPDATE crawl_windows SET state='blocked',last_error=? WHERE id=?", (message, window_id))
@@ -110,21 +148,30 @@ def _split(db: sqlite3.Connection, window: sqlite3.Row):
         ])
 
 
-def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
-                  max_pages: int = 200, start: date | None = None, end: date | None = None,
-                  min_free_gib: float = 100, progress: Callable[[dict], None] | None = None) -> dict:
+def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int | None = 25,
+                  max_pages: int | None = 200, start: date | None = None, end: date | None = None,
+                  min_free_gib: float = 100, progress: Callable[[dict], None] | None = None,
+                  follow: bool = False, refresh_seconds: float = 1800,
+                  cancelled: Callable[[], bool] | None = None) -> dict:
     """Commit each observed page before any of its decisions are requested.
 
     Restart drains the saved page queue before visiting later pages. A bounded
     reconciliation scan detects mismatched unique counts. The source is mutable;
     matching counts are not a guarantee against later publications/corrections.
     """
-    if not 1 <= max_new <= 1000:
+    if max_new is not None and not 1 <= max_new <= 1000:
         raise ValueError("Jedno lokalno pokretanje dopušta 1 do 1.000 novih odluka.")
-    if not 1 <= max_pages <= 2000:
+    if max_pages is not None and not 1 <= max_pages <= 2000:
         raise ValueError("Broj stranica mora biti između 1 i 2.000.")
+    if refresh_seconds < 1:
+        raise ValueError("Razmak provjere novih objava mora biti najmanje jedna sekunda.")
+    if follow and end is not None:
+        raise ValueError("Kontinuirano praćenje koristi današnji datum; izostavi --date-to.")
     require_free_space(corpus.path.parent, min_free_gib)
     plan = prepare(corpus, start, end)
+    if follow:
+        plan = refresh_follow(corpus)
+    next_refresh = time.monotonic() + refresh_seconds
     db = corpus.db
     pause = pause_path(corpus.path)
     initial = corpus.counts()
@@ -135,6 +182,7 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
         "date_from": plan["start_date"], "date_to": plan["end_date"],
         "new": 0, "already_saved": 0, "pages": 0, "stopped": "running",
         "coverage_independently_verified": False,
+        "mode": "continuous" if max_new is None else "bounded",
         "note": "Raspon je po datumu odluke. Naknadne objave i ispravci traže novu provjeru.",
     }
     report_path = corpus.path.parent / "last-run.json"
@@ -144,7 +192,7 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
             progress({"event": kind, **report, "total": initial["decisions"] + report["new"], **details})
 
     def interrupted() -> bool:
-        if pause.exists():
+        if pause.exists() or (cancelled is not None and cancelled()):
             report["stopped"] = "paused"
             return True
         return False
@@ -163,9 +211,13 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
     # Do not override a caller's cancellation source; the CLI also watches this file.
     notify("started")
     try:
-        while report["new"] < max_new:
+        while max_new is None or report["new"] < max_new:
             if interrupted():
                 break
+            if follow and time.monotonic() >= next_refresh:
+                plan = refresh_follow(corpus)
+                report["date_to"] = plan["end_date"]
+                next_refresh = time.monotonic() + refresh_seconds
             require_free_space(corpus.path.parent, min_free_gib)
             blocked = db.execute("SELECT last_error FROM crawl_windows WHERE state='blocked' LIMIT 1").fetchone()
             if blocked:
@@ -173,8 +225,18 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
             window = db.execute("SELECT * FROM crawl_windows WHERE state IN ('pending','active') "
                                 "ORDER BY end_date DESC,start_date DESC LIMIT 1").fetchone()
             if window is None:
-                report["stopped"] = "scope_scanned"
-                break
+                if not follow:
+                    report["stopped"] = "scope_scanned"
+                    break
+                report["stopped"] = "waiting_for_publications"
+                checkpoint()
+                notify("waiting")
+                while time.monotonic() < next_refresh and not interrupted():
+                    time.sleep(min(0.25, max(0, next_refresh - time.monotonic())))
+                if interrupted():
+                    break
+                report["stopped"] = "running"
+                continue
             wid = window["id"]
             report["window"] = {"from": window["start_date"], "to": window["end_date"]}
             with db:
@@ -199,7 +261,7 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
                 checkpoint()
                 notify("decision_saved", decision_id=did)
                 continue
-            if report["pages"] >= max_pages:
+            if max_pages is not None and report["pages"] >= max_pages:
                 report["stopped"] = "page_limit"
                 break
             page_number = window["next_page"]
@@ -214,7 +276,8 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
                 checkpoint()
                 continue
             if not page.hits:
-                observed_count = db.execute("SELECT COUNT(*) FROM crawl_queue WHERE window_id=?", (wid,)).fetchone()[0]
+                observed_count = db.execute("SELECT COUNT(*) FROM crawl_queue WHERE window_id=? AND seen_generation=?",
+                                            (wid, window["generation"])).fetchone()[0]
                 if observed_count != page.total:
                     if window["scan"] >= 2:
                         _block(db, wid, f"Broj jedinstvenih odluka ({observed_count}) ne odgovara "
@@ -235,8 +298,9 @@ def collect_local(corpus: Corpus, client: AnonClient, *, max_new: int = 25,
                 _block(db, wid, "ANON ponavlja istu stranicu rezultata; raspon nije označen dovršenim.")
             with db:
                 db.execute("INSERT INTO crawl_pages VALUES (?,?,?,?)", (wid, window["scan"], page_number, fingerprint))
-                db.executemany("INSERT OR IGNORE INTO crawl_queue(window_id,decision_id,listing_json) VALUES (?,?,?)", [
-                    (wid, h["id"], json.dumps(h, ensure_ascii=False)) for h in page.hits
+                db.executemany("INSERT INTO crawl_queue(window_id,decision_id,listing_json,seen_generation) VALUES (?,?,?,?) "
+                               "ON CONFLICT(window_id,decision_id) DO UPDATE SET seen_generation=excluded.seen_generation", [
+                    (wid, h["id"], json.dumps(h, ensure_ascii=False), window["generation"]) for h in page.hits
                 ])
                 db.execute("UPDATE crawl_windows SET next_page=? WHERE id=?", (page_number + 1, wid))
             checkpoint()

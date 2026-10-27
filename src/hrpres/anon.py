@@ -42,6 +42,12 @@ class SourceCancelled(SourceError):
     """A local pause was requested; the pending work remains in SQLite."""
 
 
+class TransientSourceError(SourceError):
+    def __init__(self, message, *, retry_after=0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 @dataclass(frozen=True)
 class ResultPage:
     hits: list[dict]
@@ -204,12 +210,12 @@ class AnonClient:
                 result = self.client.get(path, params=params)
             except httpx.HTTPError as exc:
                 if attempt == 3:
-                    raise SourceError(f"Mrežna pogreška ANON-a: {exc}") from exc
+                    raise TransientSourceError(f"Mrežna pogreška ANON-a: {exc}") from exc
                 self._wait(min(2 ** attempt, 8))
                 continue
             if result.status_code == 200:
                 return result.text
-            if result.status_code in (429, 500, 502, 503, 504) and attempt < 3:
+            if result.status_code in (429, 500, 502, 503, 504):
                 retry_after = result.headers.get("Retry-After", "")
                 delay = 2 ** attempt
                 if retry_after.isdecimal():
@@ -220,6 +226,9 @@ class AnonClient:
                         delay = max(0, (retry_at - datetime.now(timezone.utc)).total_seconds())
                     except (ValueError, TypeError):
                         pass
+                if attempt == 3:
+                    raise TransientSourceError(f"ANON je privremeno nedostupan (HTTP {result.status_code}).",
+                                               retry_after=max(delay, 1))
                 self._wait(max(delay, 1))
                 continue
             raise SourceError(f"ANON je vratio HTTP {result.status_code} za {path}.")
