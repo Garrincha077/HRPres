@@ -8,10 +8,17 @@ from __future__ import annotations
 
 import re
 import time
+import html as html_lib
+import json
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from . import __version__
 
 BASE = "https://odluke.sudovi.hr"
 SOURCE = "Tražilica odluka sudova Republike Hrvatske"
@@ -29,6 +36,54 @@ FIELDS = {
 
 class SourceError(RuntimeError):
     """The portal response cannot safely be used."""
+
+
+class SourceCancelled(SourceError):
+    """A local pause was requested; the pending work remains in SQLite."""
+
+
+class TransientSourceError(SourceError):
+    def __init__(self, message, *, retry_after=0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+@dataclass(frozen=True)
+class ResultPage:
+    hits: list[dict]
+    total: int
+
+
+def parse_result_page(html: str, *, start: date, end: date, page: int) -> ResultPage:
+    """Require both a result count and confirmation of the requested date filters."""
+    soup = BeautifulSoup(html, "html.parser")
+    counter = soup.select_one(".number-of-rslts")
+    match = re.search(r"var jsonFilters\s*=\s*'([^']*)'", html)
+    if counter is None or match is None:
+        raise SourceError("Nema broja rezultata ili potvrde vremenskog filtra ANON-a.")
+    try:
+        filters = json.loads(html_lib.unescape(match[1]).replace('\\"', '"'))
+        actual_start = date.fromisoformat(filters["decisionDateFrom"][:10])
+        actual_end = date.fromisoformat(filters["decisionDateTo"][:10])
+    except (ValueError, TypeError, KeyError) as exc:
+        raise SourceError("ANON nije potvrdio tražene datume.") from exc
+    if (actual_start, actual_end) != (start, end) or filters.get("sortBy") != "dat":
+        raise SourceError("ANON je vratio drugi raspon ili poredak rezultata.")
+    digits = re.sub(r"\D", "", counter.get_text(" ", strip=True))
+    if not digits:
+        raise SourceError("Nečitljiv broj rezultata ANON-a.")
+    total = int(digits)
+    hits = parse_results(html)
+    if page == 1 and total > 0 and not hits:
+        raise SourceError("ANON prijavljuje odluke, ali parser ne nalazi rezultate.")
+    for hit in hits:
+        try:
+            observed = datetime.strptime(hit["date"], "%d.%m.%Y").date()
+        except ValueError as exc:
+            raise SourceError("Rezultat nema čitljiv datum odluke.") from exc
+        if not start <= observed <= end:
+            raise SourceError("Odluka je izvan potvrđenog vremenskog raspona.")
+    return ResultPage(hits=hits, total=total)
 
 
 def url_for(decision_id: str) -> str:
@@ -112,15 +167,17 @@ def parse_decision(html: str, decision_id: str) -> tuple[dict, list[str]]:
 
 
 class AnonClient:
-    def __init__(self, *, interval: float = 0.7, transport=None):
+    def __init__(self, *, interval: float = 0.7, transport=None,
+                 cancelled: Callable[[], bool] | None = None):
         if interval < 0.34:
             raise ValueError("Razmak između zahtjeva mora biti barem 0,34 s.")
         self.interval = interval
         self.last = 0.0
+        self.cancelled = cancelled
         self.client = httpx.Client(
             transport=transport, base_url=BASE, follow_redirects=True,
             timeout=httpx.Timeout(25.0, read=90.0),
-            headers={"User-Agent": "HRPres/0.1 (public court decisions; github.com/Garrincha077/HRPres)"},
+            headers={"User-Agent": f"HRPres/{__version__} (public court decisions; github.com/Garrincha077/HRPres)"},
         )
 
     def __enter__(self):
@@ -129,31 +186,63 @@ class AnonClient:
     def __exit__(self, *_):
         self.client.close()
 
+    def _check_pause(self):
+        if self.cancelled is not None and self.cancelled():
+            raise SourceCancelled("Zatražena je pauza.")
+
+    def _wait(self, seconds: float):
+        deadline = time.monotonic() + max(0, seconds)
+        while True:
+            self._check_pause()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.25) if self.cancelled else remaining)
+
     def get(self, path: str, **params) -> str:
         for attempt in range(4):
+            self._check_pause()
             wait = self.last + self.interval - time.monotonic()
             if wait > 0:
-                time.sleep(wait)
+                self._wait(wait)
             self.last = time.monotonic()
             try:
                 result = self.client.get(path, params=params)
             except httpx.HTTPError as exc:
                 if attempt == 3:
-                    raise SourceError(f"Mrežna pogreška ANON-a: {exc}") from exc
-                time.sleep(min(2 ** attempt, 8))
+                    raise TransientSourceError(f"Mrežna pogreška ANON-a: {exc}") from exc
+                self._wait(min(2 ** attempt, 8))
                 continue
             if result.status_code == 200:
                 return result.text
-            if result.status_code in (429, 500, 502, 503, 504) and attempt < 3:
+            if result.status_code in (429, 500, 502, 503, 504):
                 retry_after = result.headers.get("Retry-After", "")
-                delay = int(retry_after) if retry_after.isdecimal() else 2 ** attempt
-                time.sleep(min(max(delay, 1), 60))
+                delay = 2 ** attempt
+                if retry_after.isdecimal():
+                    delay = int(retry_after)
+                elif retry_after:
+                    try:
+                        retry_at = parsedate_to_datetime(retry_after)
+                        delay = max(0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+                    except (ValueError, TypeError):
+                        pass
+                if attempt == 3:
+                    raise TransientSourceError(f"ANON je privremeno nedostupan (HTTP {result.status_code}).",
+                                               retry_after=max(delay, 1))
+                self._wait(max(delay, 1))
                 continue
             raise SourceError(f"ANON je vratio HTTP {result.status_code} za {path}.")
         raise SourceError("ANON nije dostupan nakon ponovljenih pokušaja.")
 
     def page(self, page: int) -> list[dict]:
         return parse_results(self.get("/Document/DisplayList", q="", sort="dat", page=page))
+
+    def window_page(self, page: int, start: date, end: date) -> ResultPage:
+        html = self.get(
+            "/Document/DisplayList", q="", sort="dat", page=page,
+            dd_from=start.strftime("%d.%m.%Y."), dd_to=end.strftime("%d.%m.%Y."),
+        )
+        return parse_result_page(html, start=start, end=end, page=page)
 
     def decision(self, decision_id: str) -> tuple[dict, list[str]]:
         if not UUID.fullmatch(decision_id):
