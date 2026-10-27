@@ -52,8 +52,11 @@ def main():
                     print("Najprije pripremi lokalni vektorski model i okruženje.")
                     continue
                 print("Za pauzu oba posla otvori PAUZIRAJ-HRPRES.cmd ili pritisni Ctrl+C.")
-                subprocess.run([str(vector_python), "-X", "utf8", "-m", "hrpres.continuous",
-                                "run" if choice == "6" else "search", "--root", str(root)], check=False)
+                command = [str(vector_python), "-X", "utf8", "-m", "hrpres.continuous",
+                           "run" if choice == "6" else "search", "--root", str(root)]
+                if choice == "6":
+                    command.append("--take-over")
+                subprocess.run(command, check=False)
                 continue
             else:
                 print("Odaberi broj od 0 do 7.")

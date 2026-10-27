@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import threading
+import subprocess
+import sys
 from datetime import date
 
 import httpx
@@ -10,6 +12,8 @@ import pytest
 from hrpres.anon import AnonClient, ResultPage, SourceError, TransientSourceError
 from hrpres.collector import collect_local, pause_path, prepare, refresh_follow
 from hrpres.storage import Corpus
+from hrpres.continuous import collector_lease
+from hrpres.runtime import CollectorBusy, ProcessLock
 
 
 class ManyDecisions:
@@ -85,3 +89,30 @@ def test_final_server_retry_after_is_preserved_for_recovery():
 
 def test_layout_errors_remain_fatal_instead_of_being_retried():
     assert not issubclass(SourceError, TransientSourceError)
+
+
+def test_mode_switch_pauses_only_its_own_database(tmp_path):
+    source=tmp_path/"state.sqlite3"
+    lock=tmp_path/"host.lock"
+    code=("from pathlib import Path; import sys,time; from hrpres.runtime import ProcessLock; "
+          "source=Path(sys.argv[1]); a=ProcessLock(Path(sys.argv[2])); b=ProcessLock(source.with_name(source.name+'.lock')); "
+          "a.__enter__(); b.__enter__(); print('ready',flush=True); "
+          "\nwhile not source.with_name(source.name+'.pause').exists(): time.sleep(.02)\n")
+    child=subprocess.Popen([sys.executable,"-c",code,str(source),str(lock)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        assert child.stdout.readline().strip()=="ready"
+        with collector_lease(source,lock,take_over=True,wait_seconds=5):
+            assert pause_path(source).exists()
+        child.wait(timeout=5)
+    finally:
+        if child.poll() is None: child.terminate()
+        child.communicate(timeout=5)
+
+
+def test_mode_switch_does_not_pause_an_unrelated_root(tmp_path):
+    source=tmp_path/"state.sqlite3"
+    lock=tmp_path/"host.lock"
+    with ProcessLock(lock):
+        with pytest.raises(CollectorBusy,match="drugom bazom"):
+            with collector_lease(source,lock,take_over=True): pass
+    assert not pause_path(source).exists()

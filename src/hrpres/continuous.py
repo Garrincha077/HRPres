@@ -8,13 +8,14 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .anon import AnonClient, TransientSourceError
 from .collector import atomic_json, collect_local, local_status, pause_path, prepare
 from .live_vectors import search_live, watch_vectors
 from .onnx_pilot import Encoder, verify
-from .runtime import KeepAwake, ProcessLock
+from .runtime import CollectorBusy, KeepAwake, ProcessLock
 from .storage import Corpus
 
 
@@ -22,10 +23,45 @@ def locations(root: Path):
     return root / "data" / "state.sqlite3", root / "data" / "vectors.sqlite3", root / "vectors" / "pilot-25-minilm-onnx"
 
 
+@contextmanager
+def collector_lease(source: Path, lock_path: Path, *, take_over=False, wait_seconds=120):
+    """A user-selected mode switch pauses this database's collector, never another root."""
+    lease = ProcessLock(lock_path)
+    try:
+        lease.__enter__()
+    except CollectorBusy:
+        if not take_over:
+            raise
+        own_database_busy = False
+        try:
+            with ProcessLock(source.with_name(source.name + ".lock")):
+                pass
+        except CollectorBusy:
+            own_database_busy = True
+        if not own_database_busy:
+            raise CollectorBusy("Collector radi nad drugom bazom. Najprije ga pauziraj.")
+        pause_path(source).write_text("pause\n", encoding="utf-8")
+        print("Pauziram postojeće preuzimanje ove baze i čekam spremanje napretka…", flush=True)
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                lease.__enter__()
+                break
+            except CollectorBusy:
+                if time.monotonic() >= deadline:
+                    raise CollectorBusy("Postojeći posao još završava. Napredak je sačuvan; ponovno pokreni kontinuirani način.")
+                time.sleep(.25)
+    try:
+        yield
+    finally:
+        lease.__exit__(None, None, None)
+
+
 def run_pipeline(root: Path, *, max_new=None, min_free_gib=100, interval=.7,
                  refresh_seconds=1800, client_factory=AnonClient, vector_worker=watch_vectors,
-                 host_lock: Path | None = None):
+                 host_lock: Path | None = None, take_over=False, model_bundle: Path | None = None):
     source, vectors, bundle = locations(root)
+    bundle = model_bundle or bundle
     source.parent.mkdir(parents=True, exist_ok=True)
     stop, download_done = threading.Event(), threading.Event()
     errors, latest_vectors = [], {}
@@ -56,7 +92,7 @@ def run_pipeline(root: Path, *, max_new=None, min_free_gib=100, interval=.7,
             last_print[0] = time.monotonic()
 
     lock = host_lock or Path(tempfile.gettempdir()) / "hrpres" / "anon-collector.lock"
-    with ProcessLock(lock), ProcessLock(source.with_name(source.name + ".lock")), KeepAwake():
+    with collector_lease(source, lock, take_over=take_over), ProcessLock(source.with_name(source.name + ".lock")), KeepAwake():
         pause_path(source).unlink(missing_ok=True)
         corpus = Corpus(source)
         thread = None
@@ -140,13 +176,14 @@ def main():
         if name == "run":
             command.add_argument("--max-new", type=int, help="Ograničena provjera umjesto trajnog rada")
             command.add_argument("--refresh-seconds", type=float, default=1800)
+            command.add_argument("--take-over", action="store_true", help="Sigurno pauziraj postojeći posao ove baze i preuzmi nastavak")
         if name == "search":
             command.add_argument("--query")
     args = parser.parse_args()
     try:
         if args.action == "run":
             run_pipeline(args.root, max_new=args.max_new, min_free_gib=args.min_free_gib,
-                         refresh_seconds=args.refresh_seconds)
+                         refresh_seconds=args.refresh_seconds, take_over=args.take_over)
         elif args.action == "drain":
             source, vectors, bundle = locations(args.root)
             with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as db:

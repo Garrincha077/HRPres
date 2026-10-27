@@ -26,8 +26,9 @@ U izborniku `POKRENI-HRPRES.cmd` odaberi **6 — KONTINUIRANO** ili otvori
 `KONTINUIRANO-HRPRES.cmd`. Jedno pokretanje nastavlja preuzimanje i
 vektorizaciju do pauze, zatvaranja prozora ili pogreške koja zahtijeva pregled.
 Nema zaustavljanja nakon 1.000 odluka ili 200 stranica. Opcije 1 i 2 ostaju
-za ograničene probe. Ako drugi collector već radi, prvo ga pauziraj;
-kontinuirani način čuva njegov spremljeni red čekanja.
+za ograničene probe. Ako collector ove baze već radi, pokretač najprije
+zatraži njegovu pauzu i pričeka spremanje napretka, pa nastavlja isti posao.
+Posao nad drugom bazom ne zaustavlja.
 
 Koristi se prethodno preuzet kvantizirani ONNX model. `.venv-vectors` ima
 CPU ovisnosti, a `vectors/pilot-25-minilm-onnx/model` ima provjereni model.
