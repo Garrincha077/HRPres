@@ -1,0 +1,49 @@
+name: "Vector pilot: fixed 25 decisions on CPU"
+
+on:
+  push:
+    branches: [feature/vector-pilot-25]
+    paths:
+      - .github/workflows/vector-pilot-25.yml
+      - src/hrpres/onnx_pilot.py
+      - tests/test_onnx_pilot.py
+      - examples/public-pilot-25/**
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hrpres-vector-pilot-25
+  cancel-in-progress: true
+
+jobs:
+  vectorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HF_HUB_DISABLE_XET: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CPU-only ONNX runtime and pilot dependencies
+        run: python -m pip install ".[test,onnx]" faiss-cpu
+      - name: Offline tests
+        run: python -m pytest -q
+      - name: Vectorize the fixed local pilot snapshot
+        run: python -m hrpres.onnx_pilot build --release examples/public-pilot-25 --out "$RUNNER_TEMP/hrpres-vector-pilot-25"
+      - name: Verify hashes, dimensions and full source-text coverage
+        run: python -m hrpres.onnx_pilot verify --bundle "$RUNNER_TEMP/hrpres-vector-pilot-25"
+      - name: Check semantic search
+        run: python -m hrpres.onnx_pilot search --bundle "$RUNNER_TEMP/hrpres-vector-pilot-25" --query "Koji je rok za žalbu protiv rješenja?"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hrpres-vector-pilot-25
+          path: ${{ runner.temp }}/hrpres-vector-pilot-25/
+          if-no-files-found: error
+          retention-days: 7
