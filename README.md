@@ -19,7 +19,69 @@ https://odluke.sudovi.hr/. Neslužbeni, neovisni projekt.
 - FAISS točni indeks i float16 arhiv vektora po verziji, s modelom u manifestu.
 - Povezivanje s Google Driveom putem rclone konfiguracije u GitHub Secrets.
 
-## Prva provjera
+## Lokalno preuzimanje na Windowsu (0.2)
+
+Za glavni korpus preporučen je **jedan lokalni collector**. Ne pokretati
+istodobno lokalni collector i GitHub collector. Lokalni postupak nema
+Ollamu, ne preuzima modele i ne šalje datoteke na Drive.
+
+Iz provjerenog checkouta, uz instaliran Python 3.12:
+
+    powershell -File windows/install-local.ps1 -Destination D:\HRPres
+
+Skripta kopira aplikaciju u `app/`, priprema
+izolirano okruženje i dodaje pokretače. Ne briše postojeće podatke.
+Otvori `D:\HRPres\POKRENI-HRPRES.cmd` za izbornik:
+
+- još 25 odluka za probu ili nastavak s najviše 1.000 novih odluka;
+- pregled stanja i lokalna tekstualna pretraga;
+- zaseban `PAUZIRAJ-HRPRES.cmd` za pauzu tijekom aktivnog preuzimanja.
+
+Iz naredbenog retka:
+
+    python -m hrpres download --db D:\HRPres\data\state.sqlite3 --max-new 25
+    python -m hrpres status --db D:\HRPres\data\state.sqlite3
+    python -m hrpres search --db D:\HRPres\data\state.sqlite3 --query "zastara"
+    python -m hrpres pause --db D:\HRPres\data\state.sqlite3
+
+`--json` daje strojno čitljiv rezultat. `status --verify` dodatno provjerava
+integritet baze; ta provjera na velikoj bazi može potrajati.
+
+Preuzimanje pamti **raspone datuma, stranice i red odluka** u SQLiteu.
+Zadani početni raspon je od `1900-01-01` do datuma prvog pokretanja;
+`--date-from YYYY-MM-DD` i `--date-to YYYY-MM-DD` mijenjaju početni raspon.
+Kod nastavka ostaje spremljeni završni datum. Ova verzija još ne proširuje
+automatski raspon na novije datume i ne provjerava sve naknadne ispravke.
+Drugi raspon zahtijeva zasebnu bazu, a aplikacija odbija tihu promjenu plana.
+
+Portal ograničava pojedinu pretragu na 10.000 rezultata. Collector mjesečne
+raspone s tolikim brojem rezultata dijeli na manje raspone, novije prve.
+Prije obrade odluka potvrđuje da je portal primijenio tražene datume i sort.
+Popis UUID-ova stranice sprema prije prvog dohvaćanja odluke: prekid zato
+ostavlja nastavak u redu čekanja. Za dovršetak raspona broj opaženih
+jedinstvenih UUID-ova mora odgovarati prijavljenom broju. Ako se ne slaže,
+pokušava do dva ponovna obilaska, a zatim staje uz sačuvane podatke.
+Jedan dan s 10.000 rezultata također zaustavlja rad i zahtijeva dodatnu
+podjelu po sudovima; ne označava se lažno dovršenim.
+
+OS lock sprječava više lokalnih HRPres postupaka za istog korisnika, i za
+različite baze. Ne može koordinirati druge uređaje ili dijeljeni izlazni IP.
+Program poštuje `Retry-After` te čuva zadanu rezervu od **100 GiB** na disku
+(`--min-free-gib` je podesiv). Tijekom rada privremeno sprečava automatsko
+uspavljivanje Windowsa; plan napajanja ostaje nepromijenjen. Pauza čeka
+završetak trenutačnog HTTP zahtjeva; možeš koristiti i Ctrl+C.
+
+`data/last-run.json` čuva rezultat zadnjeg pokretanja. Pri prekidu već
+potvrđene odluke ostaju dostupne. Aktivnu SQLite bazu ne kopirati ručno;
+koristiti eksplicitni izvoz kad collector ne radi. **Izvoz i vektorizacija
+u starom workflowu i dalje su pune pilotne snimke.** Inkrementalni paketi,
+vektorska usporedba i adapteri za aplikacije sljedeća su faza.
+
+Poklapanje brojeva u pojedinom rasponu nije dokaz da su obuhvaćene sve
+naknadne objave, nedatirane odluke ili ispravci cijelog izvora. Izvještaj
+zato zadržava `coverage_independently_verified: false`.
+
+## Razvoj i stari GitHub pilot
 
 Instalacija i offline testovi (Python 3.11 ili noviji):
 
