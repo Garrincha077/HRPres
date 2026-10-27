@@ -1,0 +1,26 @@
+HRPres — lokalni javni korpus sudskih odluka
+
+Otvori POKRENI-HRPRES.cmd i odaberi preuzimanje, stanje ili pretragu.
+NASTAVI-PREUZIMANJE.cmd preuzima još najviše 1.000 novih odluka.
+PAUZIRAJ-HRPRES.cmd traži pauzu; trenutačni mrežni zahtjev može još potrajati.
+Ponovnim pokretanjem preuzimanja nastavlja se spremljeni red čekanja.
+
+Podaci su u data\state.sqlite3, zadnji izvještaj u data\last-run.json.
+Prvo pokretanje sprema raspon od 1900-01-01 do datuma pokretanja.
+Taj završni datum ostaje isti pri nastavku. Ova verzija ne dodaje automatski
+nove datume niti ponovno provjerava sve naknadne objave i ispravke.
+Ne pokretati drugi collector na GitHubu ili drugom računalu istodobno.
+
+Program čuva najmanje 100 GiB slobodnog prostora. Tijekom preuzimanja
+privremeno sprečava automatsko uspavljivanje; ne mijenja plan napajanja.
+Zatvaranje prozora ili prekid veze ne briše već potvrđene odluke.
+Ne premještati niti kopirati aktivnu SQLite bazu tijekom preuzimanja.
+
+Ovo je tekstualni pilot. Vektori i integracije s aplikacijama su sljedeća faza.
+Potpunost cijelog ANON-a nije potvrđena samo uspješnim pilotom.
+U ovu mapu i javne izvoze ne dodavati privatne spise ni mape zamjena.
+
+Izvor: Tražilica odluka sudova Republike Hrvatske
+https://odluke.sudovi.hr/
+Uvjeti: https://odluke.sudovi.hr/Home/Privacy
+Neslužbeni neovisan projekt: https://github.com/Garrincha077/HRPres
